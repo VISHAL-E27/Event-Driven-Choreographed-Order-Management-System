@@ -2,10 +2,8 @@ package com.orderflow.common.event;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
-import java.util.List;
 import java.util.UUID;
 
-import com.orderflow.common.dto.OrderItemDto;
 import com.orderflow.common.enums.PaymentStatus;
 
 import lombok.AllArgsConstructor;
@@ -27,6 +25,5 @@ public class PaymentCompletedEvent {
 	private String customerEmail;
 	private PaymentStatus status;
 	private String failureReason;
-	private List<OrderItemDto> items;
 	private LocalDateTime eventDate;
 }
