@@ -1,5 +1,6 @@
 package com.orderflow.inventory.service;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -10,20 +11,26 @@ import org.springframework.transaction.annotation.Transactional;
 import com.orderflow.common.dto.OrderItemDto;
 import com.orderflow.common.event.InventoryReservedEvent;
 import com.orderflow.common.event.OrderCreatedEvent;
+import com.orderflow.common.event.PaymentCompletedEvent;
 import com.orderflow.inventory.dto.AddStockRequest;
 import com.orderflow.inventory.dto.InventoryResponse;
 import com.orderflow.inventory.entity.Inventory;
 import com.orderflow.inventory.entity.InventoryRepository;
+import com.orderflow.inventory.entity.ProcessedEvent;
+import com.orderflow.inventory.entity.ProcessedEventRepository;
 import com.orderflow.inventory.kafka.InventoryKafkaProducer;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class InventoryService {
 
 	private final InventoryRepository inventoryRepository;
 	private final InventoryKafkaProducer inventoryKafkaProducer;
+	private final ProcessedEventRepository processedEventRepository;
 
 	@Transactional
 	public InventoryResponse addStock(AddStockRequest request) {
@@ -44,6 +51,11 @@ public class InventoryService {
 
 	@Transactional
 	public void reserveStock(OrderCreatedEvent event) {
+		if (event.getEventId() != null && processedEventRepository.existsById(event.getEventId())) {
+			log.info("OrderCreatedEvent with eventId {} already processed in Inventory. Skipping.", event.getEventId());
+			return;
+		}
+
 		boolean stockAvailable = true;
 		String failureReason = null;
 
@@ -64,15 +76,55 @@ public class InventoryService {
 			}
 		}
 
+		if (event.getEventId() != null) {
+			processedEventRepository.save(ProcessedEvent.builder()
+					.eventId(event.getEventId())
+					.eventType("OrderCreatedEvent")
+					.processedAt(LocalDateTime.now())
+					.build());
+		}
+
 		InventoryReservedEvent reservedEvent = InventoryReservedEvent.builder()
 				.eventId(UUID.randomUUID())
 				.customerId(event.getCustomerId())
 				.orderId(event.getOrderId())
 				.stockAvailable(stockAvailable)
 				.failureReason(failureReason)
+				.items(event.getItems())
 				.build();
 
 		inventoryKafkaProducer.sendInventoryReservedEvent(reservedEvent);
+	}
+
+	@Transactional
+	public void compensateStock(PaymentCompletedEvent event) {
+		if (event.isPaymentSuccessful() || event.getItems() == null) {
+			return;
+		}
+
+		if (event.getEventId() != null && processedEventRepository.existsById(event.getEventId())) {
+			log.info("PaymentCompletedEvent (compensation) with eventId {} already processed in Inventory. Skipping.", event.getEventId());
+			return;
+		}
+
+		log.info("Executing compensating transaction: Releasing reserved stock for order {}", event.getOrderId());
+		for (OrderItemDto item : event.getItems()) {
+			Inventory inventory = inventoryRepository.findByProductId(item.getProductId());
+			if (inventory != null) {
+				inventory.setAvailableQuantity(inventory.getAvailableQuantity() + item.getQuantity());
+				inventory.setReservedQuantity(Math.max(0, inventory.getReservedQuantity() - item.getQuantity()));
+				inventoryRepository.save(inventory);
+				log.info("Unreserved {} units for ProductId: {}", item.getQuantity(), item.getProductId());
+			}
+		}
+
+		if (event.getEventId() != null) {
+			processedEventRepository.save(ProcessedEvent.builder()
+					.eventId(event.getEventId())
+					.eventType("PaymentCompletedEvent_Compensate")
+					.processedAt(LocalDateTime.now())
+					.build());
+		}
 	}
 
 	@Transactional(readOnly = true)
@@ -102,4 +154,5 @@ public class InventoryService {
 	}
 
 }
+
 

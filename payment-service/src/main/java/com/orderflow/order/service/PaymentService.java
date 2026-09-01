@@ -10,8 +10,10 @@ import com.orderflow.common.enums.PaymentStatus;
 import com.orderflow.common.event.InventoryReservedEvent;
 import com.orderflow.common.event.PaymentCompletedEvent;
 import com.orderflow.order.entity.Payment;
+import com.orderflow.order.entity.ProcessedEvent;
 import com.orderflow.order.kafka.PaymentKafkaProducer;
 import com.orderflow.order.repository.PaymentRepository;
+import com.orderflow.order.repository.ProcessedEventRepository;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -23,12 +25,17 @@ public class PaymentService {
 
 	private final PaymentRepository paymentRepository;
 	private final PaymentKafkaProducer paymentKafkaProducer;
+	private final ProcessedEventRepository processedEventRepository;
 
 	private final String PAYMENT_TOPIC = "payment-topic";
 
 	@Transactional
 	public void handlePayment(InventoryReservedEvent event) {
-		
+		if (event.getEventId() != null && processedEventRepository.existsById(event.getEventId())) {
+			log.info("InventoryReservedEvent with eventId {} already processed in Payment. Skipping.", event.getEventId());
+			return;
+		}
+
 		if(!event.isStockAvailable()) {
 			log.info("Stock not available for order {}. Skipping payment.",event.getOrderId());
 			PaymentCompletedEvent failedEvent = PaymentCompletedEvent.builder()
@@ -40,7 +47,17 @@ public class PaymentService {
 			.status(PaymentStatus.FAILED)
 			.eventDate(LocalDateTime.now())
 			.failureReason(event.getFailureReason())
+			.items(event.getItems())
 			.build();
+
+			if (event.getEventId() != null) {
+				processedEventRepository.save(ProcessedEvent.builder()
+						.eventId(event.getEventId())
+						.eventType("InventoryReservedEvent_FailedStock")
+						.processedAt(LocalDateTime.now())
+						.build());
+			}
+
 			paymentKafkaProducer.handlePaymentCompletedEvent(failedEvent);
             return;
 		}
@@ -64,9 +81,19 @@ public class PaymentService {
 					.paymentSuccessful(true)
 					.status(PaymentStatus.SUCCESS)
 					.eventDate(LocalDateTime.now())
+					.items(event.getItems())
 					.build();
+
+			if (event.getEventId() != null) {
+				processedEventRepository.save(ProcessedEvent.builder()
+						.eventId(event.getEventId())
+						.eventType("InventoryReservedEvent_Success")
+						.processedAt(LocalDateTime.now())
+						.build());
+			}
 			
 			paymentKafkaProducer.handlePaymentCompletedEvent(paymentCompletedEvent);
 		}
 	}
 }
+
