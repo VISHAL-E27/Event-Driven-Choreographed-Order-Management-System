@@ -5,6 +5,7 @@ import com.orderflow.common.enums.OrderStatus;
 import com.orderflow.common.event.OrderCreatedEvent;
 import com.orderflow.common.event.InventoryReservedEvent;
 import com.orderflow.common.event.PaymentCompletedEvent;
+import com.orderflow.common.exception.ResourceNotFoundException;
 import com.orderflow.order.dto.CreateOrderRequest;
 import com.orderflow.order.dto.OrderResponse;
 import com.orderflow.order.entity.Order;
@@ -80,7 +81,7 @@ public class OrderService {
         @Transactional(readOnly = true)
         public OrderResponse getOrderById(String orderId) {
                 Order order = orderRepository.findById(orderId)
-                                .orElseThrow(() -> new RuntimeException("Order not found with ID: " + orderId));
+                                .orElseThrow(() -> new ResourceNotFoundException("Order not found with ID: " + orderId));
                 return mapToOrderResponse(order);
         }
 

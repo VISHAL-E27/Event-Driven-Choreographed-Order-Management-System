@@ -12,13 +12,14 @@ import com.orderflow.common.dto.OrderItemDto;
 import com.orderflow.common.event.InventoryReservedEvent;
 import com.orderflow.common.event.OrderCreatedEvent;
 import com.orderflow.common.event.PaymentCompletedEvent;
+import com.orderflow.common.exception.ResourceNotFoundException;
 import com.orderflow.inventory.dto.AddStockRequest;
 import com.orderflow.inventory.dto.InventoryResponse;
 import com.orderflow.inventory.entity.Inventory;
-import com.orderflow.inventory.entity.InventoryRepository;
 import com.orderflow.inventory.entity.ProcessedEvent;
-import com.orderflow.inventory.entity.ProcessedEventRepository;
 import com.orderflow.inventory.kafka.InventoryKafkaProducer;
+import com.orderflow.inventory.repository.InventoryRepository;
+import com.orderflow.inventory.repository.ProcessedEventRepository;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -98,12 +99,42 @@ public class InventoryService {
 
 	@Transactional
 	public void compensateStock(PaymentCompletedEvent event) {
-		if (event.isPaymentSuccessful() || event.getItems() == null) {
+		if (event.getItems() == null) {
 			return;
 		}
 
 		if (event.getEventId() != null && processedEventRepository.existsById(event.getEventId())) {
 			log.info("PaymentCompletedEvent (compensation) with eventId {} already processed in Inventory. Skipping.", event.getEventId());
+			return;
+		}
+		
+		if (event.isPaymentSuccessful()) {
+			for (OrderItemDto item : event.getItems()) {
+				Inventory inventory = inventoryRepository.findByProductId(item.getProductId());
+				if (inventory != null) {
+					inventory.setReservedQuantity(Math.max(0, inventory.getReservedQuantity() - item.getQuantity()));
+					inventoryRepository.save(inventory);
+				}
+			}
+			if (event.getEventId() != null) {
+				processedEventRepository.save(ProcessedEvent.builder()
+						.eventId(event.getEventId())
+						.eventType("PaymentCompletedEvent_Success")
+						.processedAt(LocalDateTime.now())
+						.build());
+			}
+			return;
+		}
+
+		if (event.getFailureReason() != null && event.getFailureReason().contains("Insufficient stock")) {
+			log.info("Order {} failed due to insufficient stock. No stock was reserved, skipping compensation.", event.getOrderId());
+			if (event.getEventId() != null) {
+				processedEventRepository.save(ProcessedEvent.builder()
+						.eventId(event.getEventId())
+						.eventType("PaymentCompletedEvent_SkippedStockCompensate")
+						.processedAt(LocalDateTime.now())
+						.build());
+			}
 			return;
 		}
 
@@ -131,7 +162,7 @@ public class InventoryService {
 	public InventoryResponse getInventoryByProductId(String productId) {
 		Inventory inventory = inventoryRepository.findByProductId(productId);
 		if (inventory == null) {
-			throw new RuntimeException("Product not found in inventory: " + productId);
+			throw new ResourceNotFoundException("Product not found in inventory: " + productId);
 		}
 		return mapToResponse(inventory);
 	}

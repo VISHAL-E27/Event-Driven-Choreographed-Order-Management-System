@@ -45,6 +45,6 @@ public class InventoryController {
 	public ResponseEntity<ApiResponse<List<InventoryResponse>>> getAllInventory() {
 		List<InventoryResponse> response = inventoryService.getAllInventory();
 		return ResponseEntity.ok(ApiResponse.success("All inventory items retrieved successfully", response));
-	}
+	}                                                                
 
 }
